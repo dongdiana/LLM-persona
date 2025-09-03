@@ -32,10 +32,11 @@ persona_process/
 ├─ data/
 │  └─ contexts/                  # Market context per keyword (e.g., 그릭요거트.json)
 ├─ output/
-│  └─ {keyword}/
-│     ├─ personas_log/           # Raw per-batch responses (JSON)
-│     ├─ debug_prompts/          # (opt) saved system/user prompts per batch
-│     └─ personas_{keyword}_all.json   # Final merged personas
+│  ├─ personas_{keyword}_all.json   # Final merged personas
+│  └─ logs/
+│      └─{keyword}/
+│           ├─ personas_log/           # Raw per-batch responses (JSON)
+│           ├─ debug_prompts/          # (opt) saved system/user prompts per batch
 ├─ prompts/
 │  ├─ prompt_mc.py               # MC prompt & schema
 │  └─ prompt_sw.py               # SWAP prompt & schema
