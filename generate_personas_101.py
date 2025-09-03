@@ -269,7 +269,7 @@ def make_batch_persona_prompt(segment_rows: List[Dict], keyword: str, mode: str,
     prompt_mod = prompt_mc if mode in ("mc", "multiple_choice") else prompt_sw
     context, product_info = load_context_and_product_info(context_dir, keyword)
 
-    # entries 생성 (여기서 uuid가 만들어짐)
+    # entries 리스트 생성
     entries: List[Dict[str, Any]] = [
         _create_segment_data_entry(r, keyword, "swap" if mode.startswith("sw") else "mc")
         for r in segment_rows

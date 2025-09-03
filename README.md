@@ -16,7 +16,7 @@ Two prompt modes are supported:
 - **Swap (SWAP)** — richer personas that may include prior brand/product usage and purchase criteria.
 
 
-## Pipeline at a glance**
+## Pipeline at a glance
 
 - **Sampling (reproducible):** segment rows are sampled from posterior ratios.  
 - **Batch prompting:** rows are grouped into batches (e.g., 10) and sent in a single LLM call per batch to reduce cost/latency and keep context stable.  
