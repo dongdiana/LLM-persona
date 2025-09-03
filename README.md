@@ -16,12 +16,12 @@ Two prompt modes are supported:
 - **Swap (SWAP)** — richer personas that may include prior brand/product usage and purchase criteria.
 
 
-## Pipeline at a glance
+## Batch prompting with pre/post-processing
 
 - **Sampling (reproducible):** segment rows are sampled from posterior ratios.  
 - **Batch prompting:** rows are grouped into batches (e.g., 10) and sent in a single LLM call per batch to reduce cost/latency and keep context stable.  
 - **Per-batch logging:** every batch saves a raw JSON file under `output/{keyword}/personas_log/`; optional prompt snapshots go to `debug_prompts/`.  
-- **UUID handling & recovery:** if a batch returns fewer items or missing `uuid`s than expected, the missing entries are collected and **re-generated** into `personas_{keyword}_part_101.json`, then merged into the final output.  
+- **UUID handling & recovery:** if a batch returns fewer items or missing `uuid`s than expected, the missing entries are collected and **re-generated** into `personas_{keyword}_part_101.json`, `personas_{keyword}_part_102.json`, .. and then merged into the final output.  
 - **Final merge:** all valid batch results (+ recovered items) are consolidated into `output/{keyword}/personas_{keyword}_all.json`.
 
 

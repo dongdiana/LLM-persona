@@ -62,7 +62,6 @@ def extract_text(resp: Any) -> str:
     """
     OpenAI Responses 응답에서 텍스트를 최대한 안전하게 추출
     """
-    # 1) responses.create() 신형 필드 시도
     try:
         choice0 = getattr(resp, "choices", [None])[0]
         if choice0 and getattr(choice0, "message", None):
@@ -75,14 +74,10 @@ def extract_text(resp: Any) -> str:
                 return content.strip()
     except Exception:
         pass
-
-    # 2) 예전 스타일 필드들 시도
     try:
         return resp.output[0].content[0].text.strip()
     except Exception:
         pass
-
-    # 3) 맨 마지막 fallback
     return str(resp)
 
 def safe_json_loads(text: str):
@@ -159,7 +154,6 @@ def make_posterior_df(keyword: str, weights_dir: Path) -> pd.DataFrame:
         * df["hh_size"].map(hh_map)
     ).astype(float)
 
-    # 수치 안정화: 음수/NaN 방지 + 재정규화
     df["ratio"] = df["ratio"].clip(lower=0)
     s = df["ratio"].sum()
     if s <= 0:
@@ -215,6 +209,7 @@ def _create_segment_data_entry(row: Dict, keyword: str, mode: str) -> Dict:
     if mode == "swap":
         meta_profile["기존사용제품"] = row.get("brand", "")
 
+    # uuid는 여전히 LLM 템플릿에 미리 포함(현재 설계 유지)
     uuid_str = ''.join(random.choices(string.digits, k=6))
 
     tpl = {
@@ -224,14 +219,14 @@ def _create_segment_data_entry(row: Dict, keyword: str, mode: str) -> Dict:
         "가구소득": row.get("income", ""),
         "연령대": row.get("age_band", ""),
         "가구원수": row.get("hh_size", ""),
-        "성별": row.get("gender", "")}
-    
+        "성별": row.get("gender", "")
+    }
     if mode == "swap":
         tpl["기존사용제품"] = row.get("brand", "")
-    
+
     sub_cols = ['지역', '교육수준', '직업', '건강관심도', '가구요리빈도', '주거형태', '건강투자정도', '운동여부', 'sns사용빈도', '식료품구입빈도', '1회평균식료품구입금액']
     for col in sub_cols:
-        tpl[col]=""
+        tpl[col] = ""
 
     if keyword in ("그릭요거트", "편의점커피라떼"):
         tpl["우유구입기준"] = ""
@@ -264,14 +259,30 @@ def load_context_and_product_info(context_dir: Path, keyword: str):
 
 def make_batch_persona_prompt(segment_rows: List[Dict], keyword: str, mode: str,
                               context_dir: Path) -> Dict[str, str]:
+    """
+    기존 반환(system/user)에 더해, 이 배치에 사용된 entries/uuids를 함께 반환(검증·복구용).
+    기존 호출부는 system/user만 사용하므로 호환성 유지.
+    """
     if not segment_rows:
         raise ValueError("segment_rows는 비어있을 수 없습니다.")
     mode = mode.lower()
     prompt_mod = prompt_mc if mode in ("mc", "multiple_choice") else prompt_sw
     context, product_info = load_context_and_product_info(context_dir, keyword)
 
-    entries = [_create_segment_data_entry(r, keyword, "swap" if mode.startswith("sw") else "mc")
-               for r in segment_rows]
+    # entries 리스트 생성
+    entries: List[Dict[str, Any]] = [
+        _create_segment_data_entry(r, keyword, "swap" if mode.startswith("sw") else "mc")
+        for r in segment_rows
+    ]
+    expected_uuids = [
+        e.get("empty_persona_template", {}).get("uuid") for e in entries
+        if isinstance(e, dict)
+    ]
+    uuid_to_entry = {
+        e["empty_persona_template"]["uuid"]: e
+        for e in entries
+        if isinstance(e, dict) and "empty_persona_template" in e
+    }
 
     user_prompt = prompt_mod.PERSONA_GEN_PROMPT_BASE.format(
         keyword=keyword,
@@ -286,7 +297,23 @@ def make_batch_persona_prompt(segment_rows: List[Dict], keyword: str, mode: str,
     user = user_prompt.strip()
     logger.debug(f"[prompt] module={'MC' if prompt_mod is prompt_mc else 'SW'} "
                  f"system_len={len(system)}, user_len={len(user)}")
-    return {"system": system, "user": user}
+    # NEW: entries / uuids / mapping 추가 반환
+    return {"system": system, "user": user, "entries": entries, "uuids": expected_uuids, "uuid_map": uuid_to_entry}
+
+# NEW: 기존 entries를 그대로 사용해 재시도 프롬프트 구성
+def make_prompt_from_entries(entries: List[Dict[str, Any]], keyword: str, mode: str, context_dir: Path) -> Dict[str, str]:
+    mode = mode.lower()
+    prompt_mod = prompt_mc if mode in ("mc", "multiple_choice") else prompt_sw
+    context, product_info = load_context_and_product_info(context_dir, keyword)
+    user_prompt = prompt_mod.PERSONA_GEN_PROMPT_BASE.format(
+        keyword=keyword,
+        num_segments=len(entries),
+        context=json.dumps(context, ensure_ascii=False, indent=2),
+        product_info=json.dumps(product_info, ensure_ascii=False, indent=2),
+        all_segment_data=json.dumps(entries, ensure_ascii=False, indent=2),
+        schema=json.dumps(prompt_mod.PERSONA_SCHEMA_JSON, ensure_ascii=False, indent=2),
+    )
+    return {"system": prompt_mod.SYSTEM_PROMPT.strip(), "user": user_prompt.strip()}
 
 # -----------------------------
 # LLM 배치 실행
@@ -297,10 +324,10 @@ def run_in_batches_and_save(segment_rows: List[Dict], keyword: str, mode: str,
                             temperature: float = 0.2,
                             log_prompts: bool = False,
                             prompt_preview_chars: int = 400) -> List[Dict]:
-    out_dir = out_root / keyword
-    log_dir = out_dir / "personas_log"
-    dbg_dir = out_dir / "debug_prompts"
-    ensure_dir(out_dir)
+    log_root = out_root / "logs" / keyword
+    log_dir = log_root / "personas_log"
+    dbg_dir = log_root / "debug_prompts"
+    ensure_dir(out_root)
     ensure_dir(log_dir)
     if log_prompts:
         ensure_dir(dbg_dir)
@@ -309,9 +336,16 @@ def run_in_batches_and_save(segment_rows: List[Dict], keyword: str, mode: str,
                 f"batch_size={batch_size} segments_total={len(segment_rows)}")
 
     all_personas: List[Dict] = []
+    # NEW: 누락 uuid 엔트리들 모아 두었다가 part_101로 재생성
+    recovery_entries: List[Dict[str, Any]] = []
+
     for i in range(0, len(segment_rows), batch_size):
         batch = segment_rows[i:i+batch_size]
         prompts = make_batch_persona_prompt(batch, keyword, mode, context_dir)
+
+        # 기대 uuid 세트(검증용)
+        expected_uuids = set(prompts.get("uuids", []) or [])
+        uuid_map = prompts.get("uuid_map", {}) or {}
 
         if log_prompts:
             bno = i // batch_size + 1
@@ -332,21 +366,82 @@ def run_in_batches_and_save(segment_rows: List[Dict], keyword: str, mode: str,
 
         text = extract_text(resp)
         data = safe_json_loads(text)
+        bno = i // batch_size + 1
         bidx = f"{i}~{i+len(batch)-1}"
-        if data is None:
-            logger.warning(f"[batch {bidx}] JSON 파싱 실패 → raw 저장")
-            data = {"raw_text": text}
-        else:
-            logger.info(f"[batch {bidx}] OK (items={len(data) if isinstance(data, list) else 1})")
 
-        out_path = log_dir / f"personas_{keyword}_part{i//batch_size+1}.json"
-        out_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 기본 저장
+        out_path = log_dir / f"personas_{keyword}_part{bno}.json"
+        out_path.write_text(json.dumps(data if data is not None else {"raw_text": text},
+                                       ensure_ascii=False, indent=2), encoding="utf-8")
         logger.debug(f"[save] {out_path}")
 
+        # 결과 처리/검증
+        actual_items: List[Dict[str, Any]] = data if isinstance(data, list) else []
+        actual_uuids = {str(it.get("uuid", "")).strip() for it in actual_items if isinstance(it, dict) and it.get("uuid")}
+        item_cnt = len(actual_items)
+        uuid_cnt = len(actual_uuids)
+
+        logger.info(f"[batch {bidx}] parsed_items={item_cnt}, unique_uuids={uuid_cnt}, expected={len(expected_uuids)}")
+
+        # 기대 개수/uuid 미달 시 누락 목록 수집
+        if (item_cnt < len(expected_uuids)) or (uuid_cnt < len(expected_uuids)):
+            missing = [u for u in expected_uuids if u not in actual_uuids]
+            if missing:
+                logger.warning(f"[batch {bidx}] missing_uuids={missing}")
+                # 누락된 uuid에 해당하는 원본 entry를 복구 풀에 적재
+                for u in missing:
+                    ent = uuid_map.get(u)
+                    if ent:
+                        recovery_entries.append(ent)
+
+        # 합본 누적
         if isinstance(data, list):
             all_personas.extend(data)
 
-    final_out = out_dir / f"personas_{keyword}_all.json"
+    # NEW: 누락분 재생성 → part_101.json, part_102.json, ... (batch_size로 나눔)
+    if recovery_entries:
+        logger.info(f"[recovery] total missing entries: {len(recovery_entries)} → re-generate in batches of {batch_size}")
+
+        # recovery_entries를 batch_size로 나눠서 101, 102, ... 증분 번호로 저장
+        saved_parts = 0
+        for offset, start in enumerate(range(0, len(recovery_entries), batch_size), start=101):
+            chunk = recovery_entries[start:start+batch_size]
+
+            # 디버그 프롬프트 저장(옵션)
+            retry_prompts = make_prompt_from_entries(chunk, keyword, mode, context_dir)
+            if log_prompts:
+                (dbg_dir / f"batch_{offset:03d}.system.txt").write_text(retry_prompts["system"], encoding="utf-8")
+                (dbg_dir / f"batch_{offset:03d}.user.txt").write_text(retry_prompts["user"], encoding="utf-8")
+
+            # LLM 호출
+            resp2 = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": retry_prompts["system"]},
+                    {"role": "user", "content": retry_prompts["user"]},
+                ],
+                temperature=temperature,
+            )
+            text2 = extract_text(resp2)
+            data2 = safe_json_loads(text2)
+
+            # 저장 파일명: personas_{keyword}_part_{100+i}.json
+            patch_path = log_dir / f"personas_{keyword}_part{offset}.json"
+            patch_path.write_text(
+                json.dumps(data2 if data2 is not None else {"raw_text": text2}, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            logger.info(f"[recovery] saved → {patch_path}")
+
+            # 합본 누적
+            if isinstance(data2, list):
+                all_personas.extend(data2)
+            saved_parts += 1
+
+        logger.info(f"[recovery] completed: {saved_parts} patch part(s) written (starting from part_101)")
+
+    # 최종 합본
+    final_out = out_root / f"personas_{keyword}_all.json"
     final_out.write_text(json.dumps(all_personas, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"[done] 합본 저장 → {final_out} (total_items={len(all_personas)})")
     return all_personas
@@ -370,7 +465,7 @@ def main():
     # ------- logging options -------
     p.add_argument("--log_level", default="INFO", choices=["DEBUG","INFO","WARNING","ERROR","CRITICAL"],
                    help="로깅 레벨")
-    p.add_argument("--log_file", default="./logs/run_personas.log", help="로그 파일 경로")
+    p.add_argument("--log_file", default="./logs/generate_personas.log", help="로그 파일 경로")
     p.add_argument("--log_prompts", action="store_true", help="배치별 system/user 프롬프트 파일 저장")
     p.add_argument("--prompt_preview_chars", type=int, default=400, help="프롬프트 프리뷰 로그 길이")
 
