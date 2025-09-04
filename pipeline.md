@@ -1,11 +1,11 @@
 ```mermaid
 flowchart LR
-  A["Segment Sampling: 1,000 simple personas"] --> B["1st Simulation Type A - 1,000 simple personas"]
-  B --> C["Bayesian Update: Prior × Likelihood → Posterior"]
-  C --> D["Posterior-weighted Sampling (sampled_df 1K)"]
-  D --> E["Persona Generation with CoT + Conditional Rules"]
-  E --> F{"Mode Split"}
-  F --> G1["MC Mode: Choose among products"]
-  F --> G2["SW Mode: Switch from incumbent"]
-  G1 --> H["Outputs: posterior.json, sampled_df.csv, personas_all.json, metrics"]
+  A["Segment Sampling (by gender, age, household size, and income)"] --> B["Simulation Type A: Simple personas <br> → purchase response"]
+  B --> C["Bayesian Update: <br> Prior × Likelihood <br> → Posterior"]
+  C --> D["Posterior-weighted Segment sampling <br> → sampled_df (1K)"]
+  D --> E["Persona Generation with CoT"]
+  E --> F{"Mode Split: New product or not?"}
+  F --> G1["MC Mode (Existing product group) <br> → General buyer personas"]
+  F --> G2["SW Mode (New product)<br>→ Personas with existing products"]
+  G1 --> H["Outputs: personas_{keyword}_all.json"]
   G2 --> H
